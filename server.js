@@ -1,7 +1,9 @@
 /******************************************************************
- * server.js — Updated: GROQ-based optimization + PDF styling + email + user dashboard
- * Updates: Career objective 4 lines max, ATS + Human readability, technical skills section
- * Added: Dashboard routes for logged-in users
+ * server.js — Updated: GROQ-based optimization + PDF styling + email + user dashboard + Cloudinary
+ * - Cloudinary integration
+ * - JSON metadata DB (data/db.json)
+ * - Per-user saved CVs & past optimizations
+ * - Upload generated PDFs to Cloudinary and save metadata
  ******************************************************************/
 require('dotenv').config();
 const express = require('express');
@@ -14,11 +16,12 @@ const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const nodemailer = require('nodemailer');
+const cloudinary = require('cloudinary').v2;
 
 // Node 18+ global fetch exists, but keep fallback
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
-// GROQ
+// GROQ (AI)
 const Groq = require('groq-sdk');
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || '' });
 
@@ -27,8 +30,15 @@ const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const puppeteer = require('puppeteer');
 
+// configure Cloudinary from env
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || '',
+  api_key: process.env.CLOUDINARY_API_KEY || '',
+  api_secret: process.env.CLOUDINARY_API_SECRET || '',
+});
+
 // middleware
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // sessions
@@ -71,15 +81,43 @@ passport.deserializeUser((obj, done) => done(null, obj));
 const publicPath = path.join(__dirname, 'public');
 const uploadDir = path.join(__dirname, 'uploads');
 const generatedDir = path.join(__dirname, 'generated');
+const dataDir = path.join(__dirname, 'data');
+const dbPath = path.join(dataDir, 'db.json');
 
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-if (!fs.existsSync(generatedDir)) fs.mkdirSync(generatedDir, { recursive: true });
+// ensure directories
+for (const d of [uploadDir, generatedDir, dataDir]) {
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+}
 
+// init simple db file if missing
+function ensureDb() {
+  if (!fs.existsSync(dbPath)) {
+    const initial = { users: {}, saved: [], optimizations: [] };
+    fs.writeFileSync(dbPath, JSON.stringify(initial, null, 2), 'utf8');
+  }
+}
+ensureDb();
+
+// simple db helpers (file-backed JSON)
+function readDb() {
+  try {
+    ensureDb();
+    return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+  } catch (e) {
+    console.error('readDb error', e);
+    return { users: {}, saved: [], optimizations: [] };
+  }
+}
+function writeDb(obj) {
+  fs.writeFileSync(dbPath, JSON.stringify(obj, null, 2), 'utf8');
+}
+
+// static
 app.use(express.static(publicPath));
 app.use('/uploads', express.static(uploadDir));
 app.use('/generated', express.static(generatedDir));
 
-// multer
+// multer for uploads (keeps a local copy before optionally pushing to Cloudinary)
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -97,7 +135,7 @@ app.get(
   passport.authenticate('google', { failureRedirect: '/' }),
   (req, res) => {
     req.session.user = req.user;
-    res.redirect('/dashboard.html'); // redirect to dashboard after login
+    res.redirect('/dashboard.html');
   }
 );
 app.get('/logout', (req, res) => {
@@ -109,12 +147,54 @@ app.get('/api/user', (req, res) => {
 });
 
 // === Upload endpoint (file only) ===
-app.post('/upload-cv', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
-  return res.json({ success: true, filename: req.file.filename, filePath: `/uploads/${req.file.filename}` });
+// Upload original CV — store locally and upload to Cloudinary for persistence.
+// Returns filePath (local) and cloudinary URL
+app.post('/upload-cv', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+
+    const localPath = path.join(uploadDir, req.file.filename);
+
+    // upload to Cloudinary (resource_type auto to allow pdf/docx)
+    let cloudResult = null;
+    try {
+      cloudResult = await cloudinary.uploader.upload(localPath, {
+        resource_type: 'auto',
+        folder: `jobfit/uploads/${req.session.user?.id || 'anonymous'}`,
+      });
+    } catch (e) {
+      console.warn('Cloudinary upload failed (continuing with local file):', e?.message || e);
+    }
+
+    // save a lightweight saved-cv record in DB if user logged in
+    if (req.session.user) {
+      const db = readDb();
+      const rec = {
+        id: `saved_${Date.now()}`,
+        userId: req.session.user.id,
+        originalName: req.file.originalname,
+        localPath: `/uploads/${req.file.filename}`,
+        cloudUrl: cloudResult?.secure_url || null,
+        uploadedAt: new Date().toISOString(),
+      };
+      db.saved = db.saved || [];
+      db.saved.push(rec);
+      writeDb(db);
+    }
+
+    return res.json({
+      success: true,
+      filename: req.file.filename,
+      filePath: `/uploads/${req.file.filename}`,
+      cloudUrl: cloudResult?.secure_url || null,
+    });
+  } catch (err) {
+    console.error('upload-cv error', err);
+    return res.status(500).json({ success: false, message: 'Upload failed', error: String(err) });
+  }
 });
 
-// === Helpers ===
+// === Helpers: file text extraction, job fetching, utils ===
 async function extractTextFromFile(absPath) {
   try {
     const ext = path.extname(absPath).toLowerCase();
@@ -188,6 +268,8 @@ function removeAiExtraSections(html) {
 }
 
 // === Optimize CV route (core) ===
+// This generates the optimized CV HTML, writes a preview and PDF locally, uploads the PDF to Cloudinary,
+// then saves an optimization record to data/db.json associated with the logged-in user.
 app.post('/optimize-cv', express.json(), async (req, res) => {
   try {
     const { filePath, jobURL } = req.body || {};
@@ -199,6 +281,7 @@ app.post('/optimize-cv', express.json(), async (req, res) => {
     const originalText = await extractTextFromFile(abs);
     const jobText = await fetchJobPostingText(jobURL || '');
 
+    // prompts (as requested)
     const systemPrompt = `
 You are an expert resume writer and career coach. 
 Do NOT add sections like "Quick tips", "Extracted keywords", or any footer.
@@ -208,17 +291,23 @@ Focus on ATS optimization and human readability.
     const userPrompt = `
 I want the resume to pass ATS filters and still read well to human recruiters.
 Based on this job description, optimize my resume content to include relevant keywords and phrases naturally.
+
 Rewrite or restructure my work history to align with the core skills and qualifications they’re looking for.
+
 Include a technical skills and tools section extracted from the job description and format it to stand out.
+
 Write a Career Objective / Professional Summary that:
 - is max 4 lines,
 - is captivating, human-readable,
 - tailored specifically to the job description and requirements,
 - written as a single paragraph.
+
 Job posting excerpt:
 ${jobText?.slice(0, 4000)}
+
 CV text:
 ${originalText?.slice(0, 12000)}
+
 Return only clean HTML (no explanations or extra notes).
 `;
 
@@ -243,10 +332,12 @@ Return only clean HTML (no explanations or extra notes).
       return res.status(500).json({ success: false, message: 'AI model error', error: aiErr?.error?.message || String(aiErr) });
     }
 
+    // clean AI added sections defensively
     optimizedHTML = removeAiExtraSections(optimizedHTML);
     const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(optimizedHTML);
     const previewSnippet = looksLikeHtml ? optimizedHTML : `<div><pre>${escapeHtml(optimizedHTML)}</pre></div>`;
 
+    // full HTML wrapper (clean)
     const fullHtml = `
 <!doctype html>
 <html>
@@ -272,18 +363,49 @@ ${previewSnippet}
 </html>
 `.trim();
 
+    // save preview html locally
     const previewFile = `preview-${Date.now()}.html`;
     const previewPath = path.join(generatedDir, previewFile);
     fs.writeFileSync(previewPath, fullHtml, 'utf8');
 
+    // generate PDF via puppeteer
     const pdfFile = `optimized-${Date.now()}.pdf`;
     const pdfPath = path.join(generatedDir, pdfFile);
-
     const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(fullHtml, { waitUntil: 'networkidle0' });
     await page.pdf({ path: pdfPath, format: 'A4', printBackground: true, margin: { top: '18mm', bottom: '18mm' } });
     await browser.close();
+
+    // upload PDF to Cloudinary (resource_type auto)
+    let cloudPdf = null;
+    try {
+      cloudPdf = await cloudinary.uploader.upload(pdfPath, {
+        resource_type: 'auto',
+        folder: `jobfit/optimized/${req.session.user?.id || 'anonymous'}`,
+        use_filename: true,
+        unique_filename: true,
+      });
+    } catch (e) {
+      console.warn('Cloudinary PDF upload failed:', e?.message || e);
+    }
+
+    // save an optimization record in DB for this user
+    if (req.session.user) {
+      const db = readDb();
+      db.optimizations = db.optimizations || [];
+      const rec = {
+        id: `opt_${Date.now()}`,
+        userId: req.session.user.id,
+        previewLocal: `/generated/${previewFile}`,
+        pdfLocal: `/generated/${pdfFile}`,
+        pdfUrl: cloudPdf?.secure_url || null,
+        jobURL: jobURL || null,
+        createdAt: new Date().toISOString(),
+      };
+      db.optimizations.push(rec);
+      writeDb(db);
+    }
 
     const optimizedText = stripHtmlToText(previewSnippet).slice(0, 20000);
 
@@ -291,7 +413,7 @@ ${previewSnippet}
       success: true,
       previewHTML: previewSnippet,
       previewUrl: `/generated/${previewFile}`,
-      downloadUrl: `/generated/${pdfFile}`,
+      downloadUrl: cloudPdf?.secure_url || `/generated/${pdfFile}`,
       pdfFilename: pdfFile,
       optimizedText,
     });
@@ -307,8 +429,17 @@ app.post('/send-email', express.json(), async (req, res) => {
     const { pdfFilename } = req.body || {};
     if (!pdfFilename) return res.status(400).json({ success: false, message: 'pdfFilename required' });
 
-    const abs = path.join(generatedDir, path.basename(pdfFilename));
-    if (!fs.existsSync(abs)) return res.status(404).json({ success: false, message: 'File not found' });
+    // prefer cloud copy if available in DB for this user
+    const db = readDb();
+    const userId = req.session.user?.id;
+    const opt = db.optimizations?.find(o => o.pdfLocal && o.userId === userId && o.pdfLocal.endsWith(pdfFilename));
+    const pdfPathLocal = opt ? path.join(generatedDir, pdfFilename) : path.join(generatedDir, pdfFilename);
+
+    if (!fs.existsSync(pdfPathLocal)) {
+      // fallback: try cloud entry
+      const cloudEntry = opt?.pdfUrl;
+      if (!cloudEntry) return res.status(404).json({ success: false, message: 'File not found' });
+    }
 
     const userEmail = req.session.user?.email;
     if (!userEmail) return res.status(400).json({ success: false, message: 'No logged-in user to email to' });
@@ -321,7 +452,7 @@ app.post('/send-email', express.json(), async (req, res) => {
       to: userEmail,
       subject: 'Your Optimized CV from Job-Fit',
       text: 'Attached is the optimized CV generated by Job-Fit. Good luck with your application!',
-      attachments: [{ filename: path.basename(pdfFilename), path: abs }],
+      attachments: [{ filename: path.basename(pdfFilename), path: pdfPathLocal }],
     };
 
     await transporter.sendMail(mailOptions);
@@ -352,7 +483,7 @@ app.post('/create-checkout-session', express.json(), async (req, res) => {
   }
 });
 
-// download
+// download (serves local files)
 app.get('/download', (req, res) => {
   const file = req.query.file;
   if (!file) return res.send('No file specified.');
@@ -365,29 +496,47 @@ app.get('/download', (req, res) => {
  * Dashboard API routes *
  ***********************/
 
-// Saved CVs
+// Saved CVs (per-user) - read from DB.saved
 app.get('/api/saved-cvs', (req, res) => {
   if (!req.session.user) return res.status(401).json([]);
-  const files = fs.readdirSync(generatedDir)
-    .filter(f => f.startsWith('optimized'))
-    .map(f => ({ filename: f, date: fs.statSync(path.join(generatedDir, f)).mtime }));
+  const db = readDb();
+  const files = (db.saved || [])
+    .filter(f => f.userId === req.session.user.id)
+    .map(f => ({ ...f }));
   res.json(files);
 });
 
-// Past optimizations
+// Past optimizations (per-user) - read from DB.optimizations
 app.get('/api/past-optimizations', (req, res) => {
   if (!req.session.user) return res.status(401).json([]);
-  const files = fs.readdirSync(generatedDir)
-    .filter(f => f.startsWith('preview'))
-    .map(f => ({ filename: f, date: fs.statSync(path.join(generatedDir, f)).mtime }));
+  const db = readDb();
+  const files = (db.optimizations || [])
+    .filter(f => f.userId === req.session.user.id)
+    .map(f => ({ ...f }));
   res.json(files);
 });
 
 // Subscription status
 app.get('/api/subscription-status', (req, res) => {
   if (!req.session.user) return res.status(401).json({ active: false });
-  // TODO: Integrate Stripe subscription status
+  // TODO: Integrate Stripe subscription status (requires storing customer id)
   res.json({ active: true });
+});
+
+// Simple profile update (example)
+app.post('/api/profile', express.json(), (req, res) => {
+  if (!req.session.user) return res.status(401).json({ success: false, message: 'Not logged in' });
+  const db = readDb();
+  db.users = db.users || {};
+  const id = req.session.user.id;
+  db.users[id] = db.users[id] || {};
+  db.users[id].name = req.body.name || req.session.user.name;
+  db.users[id].email = req.body.email || req.session.user.email;
+  writeDb(db);
+  // update session copy
+  req.session.user.name = db.users[id].name;
+  req.session.user.email = db.users[id].email;
+  res.json({ success: true, user: req.session.user });
 });
 
 // start
