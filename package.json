@@ -4,7 +4,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "postinstall": "puppeteer browsers install chrome"
   },
   "dependencies": {
     "body-parser": "^1.20.3",
@@ -21,7 +22,7 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "pdf-parse": "^1.1.1",
-    "puppeteer": "^24.30.0",
+    "puppeteer": "^21.6.1",
     "stripe": "^11.18.0",
     "undici": "^7.16.0"
   },
