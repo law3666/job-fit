@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Job-Fit Dashboard</title>
 
-  <!-- Tailwind CDN -->
+  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/feather-icons"></script>
 
@@ -17,36 +17,62 @@
 
 <body class="bg-gray-100">
 
-  <!-- HEADER / TOP BAR -->
+  <!-- ================================
+          HEADER (TOP NAV)
+  =================================== -->
   <header class="bg-white shadow fixed top-0 left-0 right-0 h-16 flex items-center justify-between px-6 z-50">
+
+    <!-- Left: Mobile Menu Button -->
+    <button id="menuBtn" class="md:hidden text-gray-700">
+      <i data-feather="menu" class="w-6 h-6"></i>
+    </button>
+
+    <!-- Center Title -->
     <h1 class="text-xl font-bold text-blue-700">Job-Fit Dashboard</h1>
 
-    <div class="flex items-center gap-4">
+    <!-- Right Side -->
+    <div class="flex items-center gap-4 text-sm">
+      <a href="/" class="text-blue-600 hover:underline font-medium">← Back to Home</a>
       <span id="userName" class="font-medium"></span>
       <a href="/logout" class="text-red-500 font-medium hover:underline">Logout</a>
     </div>
   </header>
 
-  <!-- SIDEBAR -->
-  <aside class="fixed top-16 left-0 w-60 bg-white h-[calc(100vh-64px)] shadow-md p-5">
-    <nav class="space-y-2">
+  <!-- ================================
+            SIDEBAR
+  =================================== -->
+  <aside
+    id="sidebar"
+    class="fixed top-16 left-0 w-60 bg-white h-[calc(100vh-64px)] shadow-md p-5 transform -translate-x-full md:translate-x-0 transition-transform duration-300">
+
+    <nav class="space-y-2 text-sm">
+      <a href="/" class="sidebar-link flex items-center gap-3 p-2 rounded font-medium text-blue-600">
+        <i data-feather="arrow-left"></i> <span>Back to Home</span>
+      </a>
+
       <a href="#saved" class="sidebar-link flex items-center gap-3 p-2 rounded">
         <i data-feather="folder"></i> <span>Saved CVs</span>
       </a>
+
       <a href="#past" class="sidebar-link flex items-center gap-3 p-2 rounded">
         <i data-feather="repeat"></i> <span>Past Optimizations</span>
       </a>
+
       <a href="#subscription" class="sidebar-link flex items-center gap-3 p-2 rounded">
         <i data-feather="credit-card"></i> <span>Subscription Status</span>
       </a>
+
       <a href="#profile" class="sidebar-link flex items-center gap-3 p-2 rounded">
         <i data-feather="settings"></i> <span>Profile Settings</span>
       </a>
     </nav>
+
   </aside>
 
-  <!-- MAIN CONTENT -->
-  <main class="ml-64 mt-20 p-8">
+  <!-- ================================
+          MAIN CONTENT
+  =================================== -->
+  <main class="md:ml-64 mt-20 p-6 md:p-8 transition-all">
 
     <!-- QUICK STATS -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
@@ -121,14 +147,24 @@
 
   </main>
 
-  <!-- DASHBOARD JS -->
+  <!-- ================================
+           SCRIPT SECTION
+  =================================== -->
   <script>
     feather.replace();
+
+    // Mobile Sidebar Toggle
+    const menuBtn = document.getElementById("menuBtn");
+    const sidebar = document.getElementById("sidebar");
+
+    menuBtn.addEventListener("click", () => {
+      sidebar.classList.toggle("-translate-x-full");
+    });
 
     async function fetchJSON(url) {
       const res = await fetch(url);
       if (res.status === 401) {
-        window.location.href = '/';
+        window.location.href = "/";
         return null;
       }
       return res.json();
@@ -136,19 +172,19 @@
 
     async function loadDashboard() {
       try {
-        const data = await fetchJSON('/api/user');
+        const data = await fetchJSON("/api/user");
         if (!data) return;
 
         const user = data.user;
-        document.getElementById('userName').innerText = user.name;
-        document.getElementById('profileName').innerText = user.name;
-        document.getElementById('profileEmail').innerText = user.email;
+        document.getElementById("userName").innerText = user.name;
+        document.getElementById("profileName").innerText = user.name;
+        document.getElementById("profileEmail").innerText = user.email;
 
-        /* SAVED CVS */
-        const savedData = await fetchJSON('/api/saved-cvs') || [];
-        const savedTbody = document.getElementById('savedCVsTable');
+        // Saved CVs
+        const savedData = await fetchJSON("/api/saved-cvs") || [];
+        const savedTbody = document.getElementById("savedCVsTable");
 
-        document.getElementById('statsSaved').innerText = savedData.length;
+        document.getElementById("statsSaved").innerText = savedData.length;
 
         savedTbody.innerHTML =
           savedData.length === 0
@@ -160,14 +196,13 @@
                 <td class="p-3">
                   <a href="/generated/${cv.filename}" class="text-blue-600 hover:underline">Download</a>
                 </td>
-              </tr>
-            `).join('');
+              </tr>`).join('');
 
-        /* PAST OPTIMIZATIONS */
-        const pastData = await fetchJSON('/api/past-optimizations') || [];
-        const pastTbody = document.getElementById('pastOptimizationsTable');
+        // Past Optimizations
+        const pastData = await fetchJSON("/api/past-optimizations") || [];
+        const pastTbody = document.getElementById("pastOptimizationsTable");
 
-        document.getElementById('statsPast').innerText = pastData.length;
+        document.getElementById("statsPast").innerText = pastData.length;
 
         pastTbody.innerHTML =
           pastData.length === 0
@@ -179,17 +214,17 @@
                 <td class="p-3">
                   <a href="/generated/${opt.filename}" class="text-blue-600 hover:underline">Download</a>
                 </td>
-              </tr>
-            `).join('');
+              </tr>`).join('');
 
-        /* SUBSCRIPTION */
-        const subData = await fetchJSON('/api/subscription-status') || {};
+        // Subscription
+        const subData = await fetchJSON("/api/subscription-status") || {};
         const active = subData.active ? "Active" : "Inactive";
-        document.getElementById('subscriptionStatus').innerText = active;
-        document.getElementById('statsSub').innerText = active;
+
+        document.getElementById("subscriptionStatus").innerText = active;
+        document.getElementById("statsSub").innerText = active;
 
       } catch (err) {
-        console.error('Dashboard load error:', err);
+        console.error("Dashboard load error:", err);
       }
     }
 
