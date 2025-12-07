@@ -396,8 +396,8 @@ app.post('/optimize-cv', upload.none(), async (req, res) => {
 
     const originalText = await extractTextFromFile(abs);
     const jobText = await fetchJobPostingText(jobURL || '');
-    const systemPrompt = `You are an expert resume writer and career coach. Do NOT add sections like "Quick tips", "Extracted keywords", or any footer. Focus on ATS optimization and human readability.`;
-    const userPrompt = `I want the resume to pass ATS filters and still read well to human recruiters. Rewrite work history to align with core skills and qualifications. Include technical skills/tools from job description. Write a Career Objective max 4 lines, human-readable, tailored to job. Job posting excerpt:${jobText?.slice(0, 4000)} CV text:${originalText?.slice(0, 12000)} Return only clean HTML.`;
+    const systemPrompt = 'You are an expert resume writer and career coach. Create a modern, ATS-friendly resume that reads naturally to human recruiters. Use clear section headings, no images, no tables, and standard web-safe fonts. Tailor all content to the job description, emphasizing impact, results, and transferable skills with action verbs and quantifiable outcomes. Do NOT add extra sections like “Tips” or “Keywords.” Return only clean HTML.';
+    const userPrompt = `I want the resume to pass ATS filters and still read well to recruiters. Rewrite my work history to match the core skills and qualifications in the job description. Include role-specific technical skills/tools mentioned in the posting. Write a powerful 3-line professional summary that hooks a recruiter in under 10 seconds. Prioritize impact, clarity, and value. Job posting: ${jobText?.slice(0, 4000)} My current CV: ${originalText?.slice(0, 12000)} Return only clean HTML.`;
 
     const MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
     let optimizedHTML = '<p>No AI output.</p>';
