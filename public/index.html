@@ -28,6 +28,8 @@
   <!-- HEADER -->
   <header class="bg-white/80 backdrop-blur border-b sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+
+      <!-- LOGO -->
       <a href="/" class="flex items-center gap-3">
         <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-purple-600 
              flex items-center justify-center text-white font-bold shadow">
@@ -39,7 +41,8 @@
         </div>
       </a>
 
-      <nav class="flex items-center gap-5 text-sm" id="navBar">
+      <!-- DESKTOP NAV -->
+      <nav class="hidden md:flex items-center gap-5 text-sm" id="navBar">
         <a href="#how" class="hover:text-blue-600 transition">How it works</a>
         <a href="#features" class="hover:text-blue-600 transition">Features</a>
 
@@ -60,33 +63,64 @@
           Get Started
         </a>
       </nav>
+
+      <!-- MOBILE MENU BUTTON -->
+      <button id="mobileMenuBtn" class="md:hidden p-2 border rounded">
+        <i data-feather="menu"></i>
+      </button>
+    </div>
+
+    <!-- MOBILE NAV MENU -->
+    <div id="mobileMenu" class="md:hidden hidden flex-col gap-4 px-6 pb-4 bg-white border-t">
+      <a href="#how" class="block py-2">How it works</a>
+      <a href="#features" class="block py-2">Features</a>
+
+      <button id="mobileLoginBtn"
+        class="w-full px-4 py-2 rounded-lg border border-blue-600 text-blue-600 
+               hover:bg-blue-50 transition">
+        Log in
+      </button>
+
+      <button id="mobileDarkToggle"
+        class="px-3 py-2 border rounded-md hover:bg-gray-100 transition w-full">
+        Dark
+      </button>
+
+      <a href="#upload-section"
+        class="w-full inline-block text-center px-4 py-2 bg-blue-600 text-white rounded-lg shadow 
+               hover:bg-blue-700 transition">
+        Get Started
+      </a>
     </div>
   </header>
 
-  <!-- HERO -->
+  <!-- HERO SECTION -->
   <section class="relative bg-gradient-to-br from-blue-50 via-white to-purple-50 
                   dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-    <div class="max-w-7xl mx-auto px-6 py-20 grid lg:grid-cols-2 gap-14 items-center">
 
-      <!-- Left -->
-      <div class="fade-in">
-        <h1 class="text-5xl font-extrabold leading-tight text-gray-900 dark:text-white">
-          Make every job<br class="hidden sm:block" />
-          application <span 
-          class="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-          count.</span>
+    <div class="max-w-7xl mx-auto px-6 py-16 lg:py-20 grid md:grid-cols-2 gap-14 items-center">
+
+      <!-- TEXT -->
+      <div class="fade-in text-center md:text-left">
+        <h1 class="text-4xl sm:text-5xl font-extrabold leading-tight">
+          Make every job  
+          <br class="hidden sm:block" />
+          application 
+          <span class="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+            count.
+          </span>
         </h1>
 
-        <p class="mt-5 text-lg text-gray-600 dark:text-gray-300 max-w-lg">
+        <p class="mt-5 text-lg text-gray-600 dark:text-gray-300 max-w-lg mx-auto md:mx-0">
           Upload your CV and paste the job link.  
           Get an ATS-optimized version tailored to the exact job posting in seconds.
         </p>
       </div>
 
-      <!-- Upload Card -->
-      <div class="glass rounded-2xl shadow-xl p-8 fade-in border border-white/30 dark:border-white/10">
-        <h3 class="text-xl font-semibold">Upload & Tailor</h3>
-        <p class="text-sm text-gray-600 dark:text-gray-300 mt-1">
+      <!-- UPLOAD CARD -->
+      <div class="glass rounded-2xl shadow-xl p-6 sm:p-8 fade-in border border-white/30 dark:border-white/10">
+        <h3 class="text-xl font-semibold text-center md:text-left">Upload & Tailor</h3>
+        <p class="text-sm text-gray-600 dark:text-gray-300 mt-1 text-center md:text-left">
           Upload your CV. Paste job link. See optimized preview.
         </p>
 
@@ -120,6 +154,7 @@
                      focus:ring-2 focus:ring-blue-500" />
           </div>
 
+          <!-- Optimize -->
           <button id="optimize-btn" type="submit"
             class="w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 
                    transition disabled:opacity-50 disabled:cursor-not-allowed"
@@ -132,14 +167,14 @@
     </div>
   </section>
 
-  <!-- Preview Section -->
+  <!-- PREVIEW SECTION -->
   <section id="upload-section" class="max-w-5xl mx-auto px-6 py-12">
     <div id="previewCard" 
          class="hidden bg-white dark:bg-gray-900 p-8 rounded-xl shadow-xl fade-in">
       <h3 class="font-bold text-lg">Optimized Preview</h3>
       <div id="previewContent" class="mt-4 text-sm text-gray-700 dark:text-gray-300"></div>
 
-      <div class="mt-6 flex gap-4">
+      <div class="mt-6 flex flex-col sm:flex-row gap-4">
         <button id="downloadBtn" 
           class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
           Download
@@ -158,22 +193,32 @@
   <script>
     feather.replace();
 
-    document.getElementById("darkToggle").onclick = () => {
+    // DARK MODE (both desktop & mobile)
+    const toggleDark = () => {
       document.documentElement.classList.toggle("dark");
       document.body.classList.toggle("dark-mode");
     };
+    document.getElementById("darkToggle").onclick = toggleDark;
+    document.getElementById("mobileDarkToggle").onclick = toggleDark;
 
-    // AUTO-LOGIN CHECK
+    // MOBILE MENU
+    document.getElementById("mobileMenuBtn").onclick = () => {
+      document.getElementById("mobileMenu").classList.toggle("hidden");
+    };
+
+    // LOGIN CHECK
     async function checkLoginStatus() {
       try {
         const res = await fetch("/api/user");
         const data = await res.json();
-        const loginBtn = document.getElementById("loginBtn");
+
+        const desktopLogin = document.getElementById("loginBtn");
+        const mobileLogin = document.getElementById("mobileLoginBtn");
         const nav = document.getElementById("navBar");
 
-        // If logged in
         if (data.loggedIn && data.user) {
-          loginBtn.remove();
+          // Desktop Nav
+          desktopLogin?.remove();
 
           const userDiv = document.createElement("div");
           userDiv.className = "flex items-center gap-2 cursor-pointer";
@@ -181,22 +226,23 @@
           userDiv.innerHTML = `
             <img src="${data.user.photo || ''}" class="w-8 h-8 rounded-full border" alt="Profile">
             <span class="text-sm">${data.user.name || 'User'}</span>
-            <a href="/dashboard.html" 
-               class="text-sm text-blue-600 underline ml-2">Dashboard</a>
-            <a href="/logout" 
-               class="text-xs text-red-500 underline ml-2">Logout</a>
+            <a href="/dashboard.html" class="text-sm text-blue-600 underline ml-2">Dashboard</a>
+            <a href="/logout" class="text-xs text-red-500 underline ml-2">Logout</a>
           `;
-
           nav.appendChild(userDiv);
+
+          // Mobile Nav
+          mobileLogin.textContent = "Dashboard";
+          mobileLogin.onclick = () => (window.location.href = "/dashboard.html");
         } else {
           // Not logged in
-          loginBtn.onclick = () => (window.location.href = "/auth/google");
+          desktopLogin.onclick = () => (window.location.href = "/auth/google");
+          mobileLogin.onclick = () => (window.location.href = "/auth/google");
         }
       } catch (err) {
         console.error("Login check error", err);
       }
     }
-
     checkLoginStatus();
   </script>
 
