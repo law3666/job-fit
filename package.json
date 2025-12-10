@@ -4,12 +4,11 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "postinstall": "node scripts/install-chrome.js"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^143.0.0",
     "body-parser": "^1.20.3",
-    "chromium": "^3.0.3",
     "cloudinary": "^2.8.0",
     "dotenv": "^16.0.3",
     "express": "^4.21.2",
