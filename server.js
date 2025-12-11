@@ -5,13 +5,7 @@
  * CLOUDINARY_*, STRIPE_*, GOOGLE_*, GROQ_API_KEY, SESSION_SECRET, DOMAIN, STRIPE_PRICE_ID, STRIPE_WEBHOOK_SECRET
  *
  * Puppeteer notes:
- * - The code will attempt multiple ways to find Chrome:
- *   1) process.env.PUPPETEER_EXECUTABLE_PATH
- *   2) process.env.CHROME_PATH
- *   3) common user cache paths for puppeteer installs (Render / Linux, local .cache on Windows)
- *   4) fallback to launching puppeteer without executablePath (let puppeteer decide)
- *
- * If your host installs Chrome to a nonstandard location, set PUPPETEER_EXECUTABLE_PATH environment variable.
+ * - Using puppeteer-core + @sparticuz/chromium for small install footprint and Render compatibility.
  */
 
 require('dotenv').config();
@@ -26,7 +20,9 @@ const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const cloudinary = require('cloudinary').v2;
-const puppeteer = require("puppeteer-core");
+// puppeteer-core + sparticuz/chromium
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_PLACEHOLDER');
@@ -182,133 +178,20 @@ async function fetchJobPostingText(url) {
 }
 
 /**
- * Puppeteer executable path resolver
- * Tries:
- *  - env.PUPPETEER_EXECUTABLE_PATH
- *  - env.CHROME_PATH
- *  - Render-like cache: /opt/render/.cache/puppeteer/...
- *  - user home caches (Windows / Linux)
- *  - returns null if nothing found (caller should fallback to puppeteer.launch() default)
+ * Launch chrome using @sparticuz/chromium + puppeteer-core
  */
-function findChromeExecutable() {
-  const candidates = [];
-
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) candidates.push(process.env.PUPPETEER_EXECUTABLE_PATH);
-  if (process.env.CHROME_PATH) candidates.push(process.env.CHROME_PATH);
-
-  // Common Render and CI caches (from logs / typical install locations)
-  const renderBase = '/opt/render/.cache/puppeteer';
-  if (fs.existsSync(renderBase)) {
-    try {
-      const entries = fs.readdirSync(renderBase);
-      for (const entry of entries) {
-        const p1 = path.join(renderBase, entry);
-        // look for chrome-linux*/chrome or chrome-win64/chrome.exe
-        const linuxChrome = path.join(p1, 'chrome-linux64', 'chrome');
-        const linuxChromeAlt = path.join(p1, 'chrome-linux', 'chrome');
-        const winChrome = path.join(p1, 'chrome-win64', 'chrome.exe');
-        if (fs.existsSync(linuxChrome)) candidates.push(linuxChrome);
-        if (fs.existsSync(linuxChromeAlt)) candidates.push(linuxChromeAlt);
-        if (fs.existsSync(winChrome)) candidates.push(winChrome);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // Check user's home cache (Windows and Linux)
-  const homedir = require('os').homedir();
-  const localPuppeteerCache = path.join(homedir, '.cache', 'puppeteer');
-  if (fs.existsSync(localPuppeteerCache)) {
-    try {
-      const entries = fs.readdirSync(localPuppeteerCache);
-      for (const entry of entries) {
-        const linuxChrome = path.join(localPuppeteerCache, entry, 'chrome-linux64', 'chrome');
-        const linuxChromeAlt = path.join(localPuppeteerCache, entry, 'chrome-linux', 'chrome');
-        const winChrome = path.join(localPuppeteerCache, entry, 'chrome-win64', 'chrome.exe');
-        if (fs.existsSync(linuxChrome)) candidates.push(linuxChrome);
-        if (fs.existsSync(linuxChromeAlt)) candidates.push(linuxChromeAlt);
-        if (fs.existsSync(winChrome)) candidates.push(winChrome);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // Add environment PATH lookups for common names (less reliable)
-  const commonNames = ['/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium'];
-  for (const p of commonNames) {
-    if (fs.existsSync(p)) candidates.push(p);
-  }
-
-  // return the first candidate that exists and is executable
-  for (const c of candidates) {
-    try {
-      if (c && fs.existsSync(c)) return c;
-    } catch (e) {
-      // ignore
-    }
-  }
-  return null;
-}
-
-/**
- * Launch puppeteer with a best-effort strategy:
- * - try explicit executable path if found
- * - otherwise launch without executablePath and rely on puppeteer default
- * - returns { browser, usedExecutablePath }
- */
-async function launchPuppeteerBestEffort(launchOptions = {}) {
-  const execFromFinder = findChromeExecutable();
-  const baseArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
-
-  const tried = [];
-  if (execFromFinder) {
-    tried.push({ method: 'found-exec', path: execFromFinder });
-    try {
-      const browser = await puppeteer.launch({
-        headless: process.env.PUPPETEER_HEADLESS || 'new',
-        executablePath: execFromFinder,
-        args: [...baseArgs, ...(launchOptions.args || [])],
-        ...launchOptions,
-      });
-      return { browser, usedExecutablePath: execFromFinder };
-    } catch (err) {
-      console.warn('puppeteer: failed launching with found exec path', execFromFinder, err?.message || err);
-    }
-  }
-
-  // try environment variable specifically if different from the above
-  if (process.env.PUPPETEER_EXECUTABLE_PATH && process.env.PUPPETEER_EXECUTABLE_PATH !== execFromFinder) {
-    tried.push({ method: 'env:PUPPETEER_EXECUTABLE_PATH', path: process.env.PUPPETEER_EXECUTABLE_PATH });
-    try {
-      const browser = await puppeteer.launch({
-        headless: process.env.PUPPETEER_HEADLESS || 'new',
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-        args: [...baseArgs, ...(launchOptions.args || [])],
-        ...launchOptions,
-      });
-      return { browser, usedExecutablePath: process.env.PUPPETEER_EXECUTABLE_PATH };
-    } catch (err) {
-      console.warn('puppeteer: failed launching with env.PUPPETEER_EXECUTABLE_PATH', err?.message || err);
-    }
-  }
-
-  // fallback to default (allow puppeteer to use its bundled Chromium or system)
-  tried.push({ method: 'fallback', path: null });
-  try {
-    const browser = await puppeteer.launch({
-      headless: process.env.PUPPETEER_HEADLESS || 'new',
-      args: [...baseArgs, ...(launchOptions.args || [])],
-      ...launchOptions,
-    });
-    return { browser, usedExecutablePath: null };
-  } catch (err) {
-    console.error('puppeteer: final fallback failed to launch browser', err?.message || err);
-    throw new Error(
-      `Puppeteer failed to launch. Tried: ${JSON.stringify(tried)}. Error: ${err?.message || err.toString()}`
-    );
-  }
+async function launchBrowser(launchOptions = {}) {
+  // chromium provides args, executablePath, headless flags for the environment
+  const args = [...(chromium.args || []), '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', ...(launchOptions.args || [])];
+  const executablePath = await chromium.executablePath();
+  const opts = {
+    args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath,
+    headless: chromium.headless,
+    ...launchOptions,
+  };
+  return await puppeteer.launch(opts);
 }
 
 // --- Routes ---
@@ -418,10 +301,9 @@ app.post('/optimize-cv', upload.none(), async (req, res) => {
     const pdfFile = `optimized-${Date.now()}.pdf`;
     const pdfPath = path.join(generatedDir, pdfFile);
 
-    // Launch puppeteer with best-effort resolution for executable path
+    // Launch browser using sparticuz/chromium + puppeteer-core
     try {
-      const launchResult = await launchPuppeteerBestEffort({ args: [] });
-      browser = launchResult.browser;
+      browser = await launchBrowser({});
       const page = await browser.newPage();
       await page.setContent(fullHtml, { waitUntil: 'networkidle0' });
       await page.pdf({ path: pdfPath, format: 'A4', printBackground: true, margin: { top: '18mm', bottom: '18mm' } });
