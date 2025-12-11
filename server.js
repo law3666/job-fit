@@ -1,11 +1,28 @@
 /**
- * server.js — Complete, updated (Groq AI + Cloudinary + Google Auth + Stripe + JSON DB)
+ * server.js — Complete, improved and fixed
  *
- * Requires environment variables:
- * CLOUDINARY_*, STRIPE_*, GOOGLE_*, GROQ_API_KEY, SESSION_SECRET, DOMAIN, STRIPE_PRICE_ID, STRIPE_WEBHOOK_SECRET
+ * Features:
+ * - Google OAuth
+ * - Groq AI (groq-sdk)
+ * - Cloudinary uploads
+ * - Stripe Checkout + Webhook
+ * - Puppeteer-core + @sparticuz/chromium (small footprint)
+ * - JSON file DB (data/db.json)
+ * - Proper error handling and logging
+ * - Fixed dashboard data issues (store filename & ISO dates)
+ * - Static routes for uploads & generated files and a direct download route
  *
- * Puppeteer notes:
- * - Using puppeteer-core + @sparticuz/chromium for small install footprint and Render compatibility.
+ * Required environment variables (recommended):
+ * - CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
+ * - STRIPE_SECRET_KEY, STRIPE_PRICE_ID, STRIPE_WEBHOOK_SECRET
+ * - GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+ * - GROQ_API_KEY
+ * - SESSION_SECRET
+ * - DOMAIN (e.g. https://your-app.example.com)
+ *
+ * Notes:
+ * - This file assumes @sparticuz/chromium + puppeteer-core are installed.
+ * - In production, replace the in-memory session with Redis or another store.
  */
 
 require('dotenv').config();
@@ -20,27 +37,31 @@ const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const cloudinary = require('cloudinary').v2;
-// puppeteer-core + sparticuz/chromium
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_PLACEHOLDER');
+const Stripe = require('stripe');
 const Groq = require('groq-sdk');
+
+// ---------- Config & dependencies ----------
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_PLACEHOLDER');
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || '' });
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
-// Directories & DB
+// ---------- Paths & data ----------
 const publicPath = path.join(__dirname, 'public');
 const uploadDir = path.join(__dirname, 'uploads');
 const generatedDir = path.join(__dirname, 'generated');
 const dataDir = path.join(__dirname, 'data');
 const dbPath = path.join(dataDir, 'db.json');
 
+// ensure directories
 for (const d of [uploadDir, generatedDir, dataDir]) {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 }
 
+// ---------- Simple JSON DB helpers ----------
 function ensureDb() {
   if (!fs.existsSync(dbPath)) {
     fs.writeFileSync(
@@ -53,30 +74,34 @@ function readDb() {
   ensureDb();
   try {
     return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-  } catch {
+  } catch (e) {
+    console.error('readDb parse error', e);
     return { users: {}, saved: [], optimizations: [], payments: [], subscriptions: [] };
   }
 }
 function writeDb(obj) {
-  fs.writeFileSync(dbPath, JSON.stringify(obj, null, 2), 'utf8');
+  try {
+    fs.writeFileSync(dbPath, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (e) {
+    console.error('writeDb error', e);
+  }
 }
 
-// Cloudinary config
+// ---------- Cloudinary ----------
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME || '',
   api_key: process.env.CLOUDINARY_API_KEY || '',
   api_secret: process.env.CLOUDINARY_API_SECRET || '',
 });
 
-// Middleware
-// Keep using bodyParser.json wrapper for the webhook route special-case earlier
+// ---------- Middleware ----------
 app.use((req, res, next) => {
+  // webhook raw body exception handled at route, otherwise parse JSON normally
   if (req.originalUrl === '/webhook') return next();
   bodyParser.json({ limit: '10mb' })(req, res, next);
 });
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Simple in-memory session store (not recommended for production). If you have REDIS_URL or similar, replace with a proper store.
 if (!process.env.SESSION_STORE) {
   console.warn('Warning: connect.session() MemoryStore is not designed for production. Consider adding SESSION_STORE (e.g. Redis).');
 }
@@ -89,9 +114,10 @@ app.use(
   })
 );
 
-// Passport Google OAuth
+// ---------- Passport (Google OAuth) ----------
 app.use(passport.initialize());
 app.use(passport.session());
+
 passport.use(
   new GoogleStrategy(
     {
@@ -112,10 +138,11 @@ passport.use(
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
-// Static & Upload
+// ---------- Static & upload ----------
 app.use(express.static(publicPath));
 app.use('/uploads', express.static(uploadDir));
 app.use('/generated', express.static(generatedDir));
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -125,7 +152,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Helpers
+// ---------- Utility helpers ----------
 const escapeHtml = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const stripHtmlToText = (html) => (html ? String(html).replace(/<\/?[^>]+(>|$)/g, ' ').replace(/\s{2,}/g, ' ').trim() : '');
 const removeAiExtraSections = (html) =>
@@ -137,6 +164,7 @@ const removeAiExtraSections = (html) =>
         .replace(/\s{2,}/g, ' ')
         .trim()
     : '';
+
 async function extractTextFromFile(absPath) {
   try {
     const ext = path.extname(absPath).toLowerCase();
@@ -155,6 +183,7 @@ async function extractTextFromFile(absPath) {
     return '';
   }
 }
+
 async function fetchJobPostingText(url) {
   if (!url) return '';
   try {
@@ -177,11 +206,8 @@ async function fetchJobPostingText(url) {
   }
 }
 
-/**
- * Launch chrome using @sparticuz/chromium + puppeteer-core
- */
+// ---------- Puppeteer launch using sparticuz/chromium ----------
 async function launchBrowser(launchOptions = {}) {
-  // chromium provides args, executablePath, headless flags for the environment
   const args = [...(chromium.args || []), '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', ...(launchOptions.args || [])];
   const executablePath = await chromium.executablePath();
   const opts = {
@@ -194,8 +220,9 @@ async function launchBrowser(launchOptions = {}) {
   return await puppeteer.launch(opts);
 }
 
-// --- Routes ---
-// Home & Auth
+// ---------- Routes ----------
+
+// Home + Auth
 app.get('/', (req, res) => res.sendFile(path.join(publicPath, 'index.html')));
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 app.get(
@@ -215,19 +242,24 @@ app.get(
   }
 );
 app.get('/logout', (req, res) => {
-  req.logout(() => {
-    req.session.destroy(() => res.redirect('/'));
-  });
+  // passport logout signature changed in newer versions, support both
+  if (typeof req.logout === 'function') {
+    req.logout(() => {});
+  } else {
+    req.session.destroy();
+  }
+  req.session.destroy(() => res.redirect('/'));
 });
 app.get('/api/user', (req, res) => {
   if (req.session.user) return res.json({ loggedIn: true, user: req.session.user });
   return res.json({ loggedIn: false });
 });
 
-// Upload CV
+// Upload CV (store uploaded file info in DB - fixed so dashboard has filename & date)
 app.post('/upload-cv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+
     const localPath = path.join(uploadDir, req.file.filename);
     let cloudResult = null;
     try {
@@ -238,38 +270,53 @@ app.post('/upload-cv', upload.single('file'), async (req, res) => {
     } catch (e) {
       console.warn('cloud upload failed', e?.message || e);
     }
+
+    // Persist information with consistent keys that dashboard expects
     if (req.session.user) {
-      const db = readDb();
-      db.saved = db.saved || [];
-      db.saved.push({
-        id: `saved_${Date.now()}`,
-        userId: req.session.user.id,
-        originalName: req.file.originalname,
-        localPath: `/uploads/${req.file.filename}`,
-        cloudUrl: cloudResult?.secure_url || null,
-        uploadedAt: new Date().toISOString(),
-      });
-      writeDb(db);
+      try {
+        const db = readDb();
+        db.saved = db.saved || [];
+        db.saved.push({
+          id: `saved_${Date.now()}`,
+          userId: req.session.user.id,
+          originalName: req.file.originalname,
+          filename: req.file.filename, // <-- important for dashboard
+          localPath: `/uploads/${req.file.filename}`,
+          cloudUrl: cloudResult?.secure_url || null,
+          uploadedAt: new Date().toISOString(), // ISO date string
+        });
+        writeDb(db);
+      } catch (e) {
+        console.warn('failed to write saved CV to DB', e);
+      }
     }
-    res.json({ success: true, filename: req.file.filename, filePath: `/uploads/${req.file.filename}`, cloudUrl: cloudResult?.secure_url || null });
+
+    res.json({
+      success: true,
+      filename: req.file.filename,
+      filePath: `/uploads/${req.file.filename}`,
+      cloudUrl: cloudResult?.secure_url || null,
+    });
   } catch (err) {
     console.error('upload-cv error', err);
     res.status(500).json({ success: false, message: 'Upload failed', error: String(err) });
   }
 });
 
-// Optimize CV (AI) -> HTML/PDF -> Cloud
+// Optimize CV (AI) -> HTML -> PDF -> Cloud and save optimization metadata (fixed: store filename and ISO date)
 app.post('/optimize-cv', upload.none(), async (req, res) => {
   let browser = null;
   try {
     const { filePath, jobURL } = req.body || {};
     if (!filePath) return res.status(400).json({ success: false, message: 'filePath required.' });
+
     const abs = path.join(__dirname, filePath);
     if (!fs.existsSync(abs)) return res.status(400).json({ success: false, message: 'Uploaded file not found.' });
 
     const originalText = await extractTextFromFile(abs);
     const jobText = await fetchJobPostingText(jobURL || '');
-    const systemPrompt = 'You are an expert resume writer and career coach. Create a modern, ATS-friendly resume that reads naturally to human recruiters. Use clear section headings, no images, no tables, and standard web-safe fonts. Tailor all content to the job description, emphasizing impact, results, and transferable skills with action verbs and quantifiable outcomes. Do NOT add extra sections like “Tips” or “Keywords.” Return only clean HTML.';
+    const systemPrompt =
+      'You are an expert resume writer and career coach. Create a modern, ATS-friendly resume that reads naturally to human recruiters. Use clear section headings, no images, no tables, and standard web-safe fonts. Tailor all content to the job description, emphasizing impact, results, and transferable skills with action verbs and quantifiable outcomes. Do NOT add extra sections like “Tips” or “Keywords.” Return only clean HTML.';
     const userPrompt = `I want the resume to pass ATS filters and still read well to recruiters. Rewrite my work history to match the core skills and qualifications in the job description. Include role-specific technical skills/tools mentioned in the posting. Write a powerful 3-line professional summary that hooks a recruiter in under 10 seconds. Prioritize impact, clarity, and value. Job posting: ${jobText?.slice(0, 4000)} My current CV: ${originalText?.slice(0, 12000)} Return only clean HTML.`;
 
     const MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
@@ -291,7 +338,10 @@ app.post('/optimize-cv', upload.none(), async (req, res) => {
     }
 
     optimizedHTML = removeAiExtraSections(optimizedHTML);
-    const previewSnippet = /<\/?[a-z][\s\S]*>/i.test(optimizedHTML) ? optimizedHTML : `<div><pre>${escapeHtml(optimizedHTML)}</pre></div>`;
+    const previewSnippet = /<\/?[a-z][\s\S]*>/i.test(optimizedHTML)
+      ? optimizedHTML
+      : `<div><pre>${escapeHtml(optimizedHTML)}</pre></div>`;
+
     const fullHtml = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><style>body{font-family:Inter,system-ui,-apple-system,"Helvetica Neue",Arial;color:#111;padding:24px;background:#fff}.resume{max-width:900px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,0.08);overflow:hidden}.content{padding:22px}h2{color:#0b74da;margin-top:0;font-size:15px}ul{margin:6px 0 12px 18px}pre{white-space:pre-wrap;word-break:break-word}</style></head><body><div class="resume"><div class="content">${previewSnippet}</div></div></body></html>`.trim();
 
     const previewFile = `preview-${Date.now()}.html`;
@@ -301,7 +351,7 @@ app.post('/optimize-cv', upload.none(), async (req, res) => {
     const pdfFile = `optimized-${Date.now()}.pdf`;
     const pdfPath = path.join(generatedDir, pdfFile);
 
-    // Launch browser using sparticuz/chromium + puppeteer-core
+    // Launch browser and create PDF
     try {
       browser = await launchBrowser({});
       const page = await browser.newPage();
@@ -310,7 +360,6 @@ app.post('/optimize-cv', upload.none(), async (req, res) => {
       await page.close();
     } catch (puppErr) {
       console.error('Puppeteer generation failed:', puppErr?.message || puppErr);
-      // fallback: return the preview so the user still gets something.
       const optimizedText = stripHtmlToText(previewSnippet).slice(0, 20000);
       return res.json({
         success: true,
@@ -332,7 +381,7 @@ app.post('/optimize-cv', upload.none(), async (req, res) => {
       }
     }
 
-    // upload pdf to cloudinary
+    // upload pdf to cloudinary (optional)
     let cloudPdf = null;
     try {
       cloudPdf = await cloudinary.uploader.upload(pdfPath, {
@@ -345,19 +394,25 @@ app.post('/optimize-cv', upload.none(), async (req, res) => {
       console.warn('cloud upload pdf failed', e?.message || e);
     }
 
+    // Save optimization metadata to DB with consistent keys the dashboard expects
     if (req.session.user) {
-      const db = readDb();
-      db.optimizations = db.optimizations || [];
-      db.optimizations.push({
-        id: `opt_${Date.now()}`,
-        userId: req.session.user.id,
-        previewLocal: `/generated/${previewFile}`,
-        pdfLocal: `/generated/${pdfFile}`,
-        pdfUrl: cloudPdf?.secure_url || null,
-        jobURL: jobURL || null,
-        createdAt: new Date().toISOString(),
-      });
-      writeDb(db);
+      try {
+        const db = readDb();
+        db.optimizations = db.optimizations || [];
+        db.optimizations.push({
+          id: `opt_${Date.now()}`,
+          userId: req.session.user.id,
+          filename: pdfFile, // important for dashboard /download links
+          previewLocal: `/generated/${previewFile}`,
+          pdfLocal: `/generated/${pdfFile}`,
+          pdfUrl: cloudPdf?.secure_url || null,
+          jobURL: jobURL || null,
+          createdAt: new Date().toISOString(),
+        });
+        writeDb(db);
+      } catch (e) {
+        console.warn('failed to write optimization record', e);
+      }
     }
 
     const optimizedText = stripHtmlToText(previewSnippet).slice(0, 20000);
@@ -382,16 +437,14 @@ app.post('/optimize-cv', upload.none(), async (req, res) => {
   }
 });
 
-// NOTE: Email sending has been removed per your choice (Option 3).
-// The /send-email route and nodemailer usage are intentionally omitted.
-
-// Stripe Checkout
+// ---------- Stripe Checkout & Webhook (robust) ----------
 app.post('/create-checkout-session', bodyParser.json(), async (req, res) => {
   try {
     const { email, metadata } = req.body || {};
     const user = req.session.user;
     const PRICE_ID = process.env.STRIPE_PRICE_ID || 'price_test_placeholder';
     const DOMAIN = process.env.DOMAIN || `http://localhost:${process.env.PORT || 4242}`;
+
     const sessionObj = {
       mode: 'subscription',
       payment_method_types: ['card'],
@@ -401,7 +454,9 @@ app.post('/create-checkout-session', bodyParser.json(), async (req, res) => {
       subscription_data: { metadata: { ...(metadata || {}), userId: user?.id || 'anonymous', email: email || user?.email || null } },
       customer_email: email || user?.email || undefined,
     };
+
     const checkoutSession = await stripe.checkout.sessions.create(sessionObj);
+
     try {
       const db = readDb();
       db.payments = db.payments || [];
@@ -417,6 +472,7 @@ app.post('/create-checkout-session', bodyParser.json(), async (req, res) => {
     } catch (e) {
       console.warn('failed to write pending payment', e);
     }
+
     res.json({ url: checkoutSession.url });
   } catch (err) {
     console.error('create-checkout-session error', err);
@@ -424,23 +480,29 @@ app.post('/create-checkout-session', bodyParser.json(), async (req, res) => {
   }
 });
 
-// Stripe Webhook
 app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) => {
-  const sig = req.headers['stripe-signature'],
-    webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
+
   let event;
   try {
-    if (webhookSecret) event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-    else event = JSON.parse(req.body.toString('utf8'));
+    if (webhookSecret) {
+      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    } else {
+      // If webhook secret not set (dev), parse raw body
+      event = JSON.parse(req.body.toString('utf8'));
+    }
   } catch (err) {
     console.error('Webhook verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
+
   (async () => {
     try {
       const db = readDb();
       db.payments = db.payments || [];
       db.subscriptions = db.subscriptions || [];
+
       switch (event.type) {
         case 'checkout.session.completed': {
           const session = event.data.object;
@@ -460,6 +522,7 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) =>
           console.log('Recorded checkout.session.completed', session.id);
           break;
         }
+
         case 'invoice.paid': {
           const invoice = event.data.object;
           const subId = invoice.subscription;
@@ -474,6 +537,7 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) =>
           console.log('Recorded invoice.paid', subId);
           break;
         }
+
         case 'customer.subscription.updated':
         case 'customer.subscription.created': {
           const sub = event.data.object;
@@ -487,6 +551,7 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) =>
           console.log('Upserted subscription', sub.id);
           break;
         }
+
         case 'invoice.payment_failed': {
           const invoice = event.data.object;
           const subId = invoice.subscription;
@@ -507,6 +572,7 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) =>
           console.log('invoice.payment_failed recorded', subId);
           break;
         }
+
         default:
           console.log('Unhandled event type', event.type);
       }
@@ -514,20 +580,50 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) =>
       console.error('Error processing webhook event', e);
     }
   })();
+
   res.json({ received: true });
 });
 
-// Dashboard APIs
+// ---------- Dashboard APIs (saved CVs, optimizations, subscription status) ----------
 app.get('/api/saved-cvs', (req, res) => {
   if (!req.session.user) return res.status(401).json([]);
-  const db = readDb();
-  res.json((db.saved || []).filter((f) => f.userId === req.session.user.id).map((f) => ({ ...f })));
+  try {
+    const db = readDb();
+    const rows = (db.saved || []).filter((f) => f.userId === req.session.user.id).map((f) => ({
+      id: f.id,
+      originalName: f.originalName,
+      filename: f.filename, // dashboard expects filename
+      localPath: f.localPath,
+      cloudUrl: f.cloudUrl || null,
+      uploadedAt: f.uploadedAt || null,
+    }));
+    res.json(rows);
+  } catch (e) {
+    console.error('saved-cvs error', e);
+    res.status(500).json([]);
+  }
 });
+
 app.get('/api/past-optimizations', (req, res) => {
   if (!req.session.user) return res.status(401).json([]);
-  const db = readDb();
-  res.json((db.optimizations || []).filter((f) => f.userId === req.session.user.id).map((f) => ({ ...f })));
+  try {
+    const db = readDb();
+    const rows = (db.optimizations || []).filter((f) => f.userId === req.session.user.id).map((f) => ({
+      id: f.id,
+      filename: f.filename,
+      previewLocal: f.previewLocal,
+      pdfLocal: f.pdfLocal,
+      pdfUrl: f.pdfUrl || null,
+      jobURL: f.jobURL || null,
+      createdAt: f.createdAt || null,
+    }));
+    res.json(rows);
+  } catch (e) {
+    console.error('past-optimizations error', e);
+    res.status(500).json([]);
+  }
 });
+
 app.get('/api/subscription-status', (req, res) => {
   if (!req.session.user) return res.status(401).json({ active: false });
   try {
@@ -540,30 +636,41 @@ app.get('/api/subscription-status', (req, res) => {
     res.json({ active: false });
   }
 });
-app.post(
-  '/api/profile',
-  bodyParser.json(),
-  (req, res) => {
-    if (!req.session.user) return res.status(401).json({ success: false, message: 'Not logged in' });
-    try {
-      const db = readDb();
-      db.users = db.users || {};
-      const id = req.session.user.id;
-      db.users[id] = db.users[id] || {};
-      db.users[id].name = req.body.name || req.session.user.name;
-      db.users[id].email = req.body.email || req.session.user.email;
-      writeDb(db);
-      req.session.user.name = db.users[id].name;
-      req.session.user.email = db.users[id].email;
-      res.json({ success: true, user: req.session.user });
-    } catch (e) {
-      console.error('profile update error', e);
-      res.status(500).json({ success: false, message: 'Failed to update profile' });
-    }
-  }
-);
 
-// Download
+app.post('/api/profile', bodyParser.json(), (req, res) => {
+  if (!req.session.user) return res.status(401).json({ success: false, message: 'Not logged in' });
+  try {
+    const db = readDb();
+    db.users = db.users || {};
+    const id = req.session.user.id;
+    db.users[id] = db.users[id] || {};
+    db.users[id].name = req.body.name || req.session.user.name;
+    db.users[id].email = req.body.email || req.session.user.email;
+    writeDb(db);
+    req.session.user.name = db.users[id].name;
+    req.session.user.email = db.users[id].email;
+    res.json({ success: true, user: req.session.user });
+  } catch (e) {
+    console.error('profile update error', e);
+    res.status(500).json({ success: false, message: 'Failed to update profile' });
+  }
+});
+
+// ---------- Download route (explicit, safer) ----------
+app.get('/generated/:filename', (req, res) => {
+  try {
+    const filename = path.basename(req.params.filename || '');
+    if (!filename) return res.status(400).send('No filename provided');
+    const abs = path.join(generatedDir, filename);
+    if (!fs.existsSync(abs)) return res.status(404).send('File not found');
+    res.download(abs);
+  } catch (e) {
+    console.error('generated download error', e);
+    res.status(500).send('Download error');
+  }
+});
+
+// Old query-based download route (kept for backwards compatibility)
 app.get('/download', (req, res) => {
   const file = req.query.file;
   if (!file) return res.send('No file specified.');
@@ -572,8 +679,8 @@ app.get('/download', (req, res) => {
   res.download(abs);
 });
 
-// Start server
+// ---------- Start server ----------
 const PORT = process.env.PORT || 4242;
-app.listen(PORT, () =>
-  console.log(`🚀 Running ${process.env.DOMAIN || `http://localhost:${PORT}`}`)
-);
+app.listen(PORT, () => {
+  console.log(`🚀 Running ${process.env.DOMAIN || `http://localhost:${PORT}`}`);
+});
