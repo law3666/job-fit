@@ -71,9 +71,9 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 passport.use(
   new GoogleStrategy(
     {
-      clientID: process.env.GOOGLE_CLIENT_ID || "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
-      callbackURL: "/auth/google/callback",
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: `${process.env.BASE_URL}/auth/google/callback`,
     },
     (accessToken, refreshToken, profile, done) => done(null, profile)
   )
